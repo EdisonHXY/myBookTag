@@ -4,14 +4,19 @@ import {
   DEFAULT_NOTE_PROSE_LINE_HEIGHT,
   flattenDetailsForLinearHtml,
   NOTE_PROSE_HEADING_SCALE,
-  NOTE_PROSE_PARAGRAPH_SPACING_PX,
   noteProseCodeFontSize,
+  noteProseStyleCssVariables,
+  parseNoteProseParagraphSpacing,
+  parseNoteProseTextAlign,
+  parseNoteProseLetterSpacing,
   parseNoteProseEmphasisStyle,
   parseNoteProseHeadingStyle,
   parseNoteProseLineHeight,
   parseNoteProseQuoteStyle,
   type NoteProsePaletteColors,
   type NoteProseStylePreferences,
+  detectPublishImageMimeType,
+  isPublishImageMimeType,
 } from "@edgeever/shared";
 import katex from "katex";
 import "katex/contrib/mhchem";
@@ -19,15 +24,17 @@ import { common, createLowlight } from "lowlight";
 import { toCanvas } from "html-to-image";
 import { marked } from "marked";
 import { MERMAID_THEME_PALETTES } from "@/components/ThemeProvider";
-import { scaleMermaidSvg } from "@/lib/mermaid-svg";
+import { renderThemedMermaidSvg } from "@/lib/mermaid-renderer";
+import { normalizeMermaidSvgForViewer } from "@/lib/mermaid-svg";
 import { copyHtmlToClipboard } from "@/lib/clipboard";
 import { parseCustomCssToStyles } from "@/lib/css-sandbox";
-import {
-  DEFAULT_NOTE_PROSE_STYLE_PREFERENCES,
-  readNoteProseStylePreference,
-} from "@/lib/note-prose-style-preference";
+import { deriveChapterCardLabels, splitCoverTitle } from "@/lib/magazine-header";
+import { readNoteCoverTags } from "@/lib/note-cover-tags";
+import { readNoteProseStylePreference } from "@/lib/note-prose-style-preference";
+import { createConfiguredPublishImageUploader, PublishImageError } from "@/lib/publish-image-host";
+import { api, getConfiguredDesktopApiBaseUrl } from "@/lib/api";
+import { toApiResourceUrl } from "@/lib/desktop-resources";
 
-const PARAGRAPH_SPACING = `${NOTE_PROSE_PARAGRAPH_SPACING_PX}px`;
 const PUBLISH_FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif";
 const PUBLISH_MONO = "'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
 const BODY_COLOR = "#27272a";
@@ -49,6 +56,12 @@ type WeChatMetrics = {
   lineHeight: number;
 };
 
+type PublishProseStyle = NoteProseStylePreferences & {
+  coverTags: string;
+  showMagazineCover: boolean;
+  showChapterNavigation: boolean;
+};
+
 const headingStyle = (tag: keyof typeof HEADING_LAYOUT, metrics: WeChatMetrics) => {
   const layout = HEADING_LAYOUT[tag];
   const size = Math.round(metrics.fontSize * NOTE_PROSE_HEADING_SCALE[tag]);
@@ -59,9 +72,10 @@ const applyLegacyWeChatStyles = (
   root: HTMLElement,
   metrics: WeChatMetrics,
   colors: NoteProsePaletteColors | null,
-  _accentOnly = false,
-  proseStyle: NoteProseStylePreferences = DEFAULT_NOTE_PROSE_STYLE_PREFERENCES,
+  _accentOnly: boolean,
+  proseStyle: PublishProseStyle,
 ) => {
+  const rhythm = noteProseStyleCssVariables(proseStyle);
   const fontSize = `${metrics.fontSize}px`;
   const lineHeight = String(metrics.lineHeight);
   const codeSize = `${noteProseCodeFontSize(metrics.fontSize)}px`;
@@ -75,7 +89,7 @@ const applyLegacyWeChatStyles = (
   const bold = colors ? `font-weight: 800; color: ${accent};` : "font-weight: 800;";
   const thBackground = colors ? colors.accent : "#f3f4f6";
   const thColor = colors ? "#ffffff" : "#111827";
-  const textStyle = `font-family: ${PUBLISH_FONT}; font-size: ${fontSize}; line-height: ${lineHeight}; letter-spacing: -0.005em; color: ${BODY_COLOR};`;
+  const textStyle = `font-family: ${PUBLISH_FONT}; font-size: ${fontSize}; line-height: ${lineHeight}; letter-spacing: ${rhythm["--editor-body-letter-spacing"]}; color: ${BODY_COLOR};`;
   const h2Base = headingStyle("h2", metrics);
   const h3Base = headingStyle("h3", metrics);
   const h2Style = proseStyle.headingStyle === "bar"
@@ -86,10 +100,10 @@ const applyLegacyWeChatStyles = (
   const h3Style = proseStyle.headingStyle === "bar"
     ? `${h3Base.replace(/padding:\s*0;/, "padding: 0 0 0 8px;")} border-left: 3px solid ${accent};`
     : proseStyle.headingStyle === "numbered"
-      ? `display: inline-block; margin: 18px 0 8px; padding: 4px 12px; border-radius: 999px; background: ${surface}; color: ${accent}; font-family: ${PUBLISH_FONT}; font-size: 13px; font-weight: 700; line-height: 1.5;`
+      ? `margin: 1.6em 0 0.6em; padding: 0; font-family: ${PUBLISH_FONT}; font-size: ${Math.round(metrics.fontSize * 1.15)}px; font-weight: 700; line-height: 1.4; letter-spacing: -0.01em; color: #111827; text-align: left;`
       : h3Base;
   const h4Style = proseStyle.headingStyle === "numbered"
-    ? `display: inline-block; margin: 16px 0 8px; padding: 1px 6px; border-radius: 3px; background: #fde68a; color: #111827; font-family: ${PUBLISH_FONT}; font-size: 14px; font-weight: 800; line-height: 1.5;`
+    ? `display: inline-block; margin: 16px 0 8px; padding: 1px 6px; border-radius: 3px; background: #fde68a; color: #111827; font-family: ${PUBLISH_FONT}; font-size: ${fontSize}; font-weight: 800; line-height: 1.5;`
     : headingStyle("h4", metrics);
   const blockquoteStyle = proseStyle.quoteStyle === "dashed"
     ? `margin: 0 0 20px; padding: 12px 16px; border: 1px dashed #d1d5db; border-radius: 8px; background: #f9fafb; color: ${QUOTE_COLOR}; font-family: ${PUBLISH_FONT}; line-height: ${lineHeight};`
@@ -101,12 +115,15 @@ const applyLegacyWeChatStyles = (
   const preStyle = proseStyle.quoteStyle === "dashed"
     ? `margin: 0 0 20px; padding: 14px 18px; overflow: hidden; border: 0; border-left: 3px solid ${accent}; border-radius: 0 8px 8px 0; background: #f9fafb; color: #0f172a; font-family: ${PUBLISH_MONO}; font-size: ${codeSize}; line-height: 1.75; text-align: left; white-space: pre-wrap;`
     : `margin: 0 0 16px; padding: 14px 16px; overflow: hidden; border: 1px solid #e4e4e4; border-radius: 8px; background: #fafafa; color: #0f172a; font-family: ${PUBLISH_MONO}; font-size: ${codeSize}; line-height: 1.6; text-align: left; white-space: pre-wrap;`;
-  const thStyle = `padding: 8px 13px; border: 1px solid #e5e5e5; background: ${thBackground}; color: ${thColor}; font-weight: 700; font-size: 13px; text-align: left;`;
+  // Match the editor header size and keep paragraph defaults out of table cells.
+  const tableHeaderSize = "13.44px";
+  const accentGradient = `background-color: ${accent}; background-image: linear-gradient(135deg, rgba(255,255,255,0), rgba(255,255,255,0.2));`;
+  const thStyle = `padding: 8px 13px; border: 1px solid #e5e5e5; background: ${thBackground}; color: ${thColor}; font-weight: 700; font-size: ${tableHeaderSize}; text-align: left; vertical-align: top;`;
   const imgStyle =
     "display: block; max-width: 100%; height: auto; margin: 16px 0; padding: 6px; box-sizing: border-box; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; box-shadow: 0 4px 12px -2px rgba(0,0,0,0.08);";
-  const paragraphBottom = proseStyle.headingStyle === "numbered" ? "16px" : PARAGRAPH_SPACING;
+  const paragraphBottom = rhythm["--editor-paragraph-spacing"];
   const styles: Record<string, string> = {
-    p: `margin: 0 0 ${paragraphBottom}; padding: 0; ${textStyle}`,
+    p: `margin: 0 0 ${paragraphBottom}; padding: 0; text-align: ${rhythm["--editor-body-text-align"]}; ${textStyle}`,
     h1: headingStyle("h1", metrics),
     h2: h2Style,
     h3: h3Style,
@@ -135,7 +152,7 @@ const applyLegacyWeChatStyles = (
       : "margin: 24px 0; border: 0; border-top: 1px solid #1a1d21;",
     table: `width: 100%; margin: 20px 0; border-collapse: collapse; font-size: ${fontSize}; line-height: 1.45;`,
     th: thStyle,
-    td: `padding: 8px 13px; border: 1px solid #e5e5e5; color: ${BODY_COLOR}; text-align: left;`,
+    td: `padding: 8px 13px; border: 1px solid #e5e5e5; color: ${BODY_COLOR}; text-align: left; vertical-align: top;`,
     img: imgStyle,
   };
 
@@ -148,7 +165,10 @@ const applyLegacyWeChatStyles = (
     const isMergeDivider =
       tagName === "hr" && element.matches("[data-edgeever-merge-divider], .edgeever-merge-divider");
     const quoted = (tagName === "p" || tagName === "li") && element.closest("blockquote");
-    const baseStyle = styles[tagName] || "";
+    const cell = tagName === "p" ? element.closest("th, td") : null;
+    const baseStyle = cell
+      ? `margin: 0; padding: 0; font-family: ${PUBLISH_FONT}; font-size: ${cell.tagName.toLowerCase() === "th" ? tableHeaderSize : fontSize}; line-height: 1.45; text-align: inherit; letter-spacing: inherit; color: ${cell.tagName.toLowerCase() === "th" ? thColor : BODY_COLOR};`
+      : styles[tagName] || "";
     // One color declaration. A second `color` later in the attribute is easy for WeChat to drop.
     const style = isMergeDivider
       ? "margin: 24px 0; border: 0; border-top: 2px solid #1a1d21;"
@@ -168,26 +188,37 @@ const applyLegacyWeChatStyles = (
     });
   }
 
+  // Heading styles must not enable a cover independently of the reading-style toggle.
   if (proseStyle.showMagazineCover) {
     root.querySelectorAll<HTMLElement>("h1").forEach((heading) => {
       if (heading.querySelector("[data-ee-cover-card]")) return;
-      const titleHtml = heading.innerHTML;
+      const hasInlineMarkup = heading.children.length > 0;
+      const split = hasInlineMarkup ? null : splitCoverTitle(heading.textContent || "");
+      const titleHtml = split
+        ? [
+            `<span data-ee-publish-chrome="true">${escapeHtmlAttribute(split.primary)}</span>`,
+            split.highlight
+              ? `<span data-ee-publish-chrome="true" style="color: ${colors ? accent : "#6b7280"};">${escapeHtmlAttribute(split.highlight)}</span>`
+              : "",
+          ].join("")
+        : heading.innerHTML;
       heading.style.cssText = `margin: 0 0 28px; padding: 0; background: #ffffff; border: 1.5px solid ${divider}; border-radius: 20px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.06);`;
       heading.innerHTML = [
         `<section data-ee-publish-chrome="true" data-ee-cover-card="true" style="padding: 28px 24px 22px;">`,
-        `<section data-ee-publish-chrome="true" style="margin-bottom: 18px; font-size: 0;">`,
-        `<span data-ee-publish-chrome="true" style="display: inline-block; width: 6px; height: 6px; background: ${accent}; border-radius: 50%; vertical-align: middle;"><span leaf=""><br></span></span>`,
-        `<span data-ee-publish-chrome="true" style="display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 3px; color: ${accent}; vertical-align: middle; margin-left: 8px;">FEATURED · 深度实测</span>`,
+        ...(proseStyle.coverTags ? [
+          `<section data-ee-cover-tags="true" data-ee-publish-chrome="true" style="margin-bottom: 18px; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; word-break: break-word;">`,
+          `<span data-ee-publish-chrome="true" style="display: inline-block; width: 6px; height: 6px; background: ${accent}; border-radius: 50%; vertical-align: middle;"><span leaf=""><br></span></span>`,
+          `<span data-ee-publish-chrome="true" style="display: inline-block; max-width: calc(100% - 14px); white-space: normal; font-size: 11px; font-weight: 700; letter-spacing: 3px; color: ${accent}; vertical-align: middle; margin-left: 8px;">${escapeHtmlAttribute(proseStyle.coverTags)}</span>`,
+          `</section>`,
+        ] : []),
+        `<p data-ee-publish-chrome="true" style="font-size: ${metrics.fontSize * 1.75}px; font-weight: 900; color: #111827; margin: 0; line-height: 1.2; letter-spacing: -0.5px;">${titleHtml}</p>`,
         `</section>`,
-        `<p data-ee-publish-chrome="true" style="font-size: 23px; font-weight: 900; color: #111827; margin: 0 0 14px; line-height: 1.2; letter-spacing: -0.5px;">${titleHtml}</p>`,
-        `<section data-ee-publish-chrome="true" style="width: 48px; height: 3px; background: ${accent}; border-radius: 2px;"><span leaf=""><br></span></section>`,
-        `</section>`,
-        `<section data-ee-publish-chrome="true" style="background: ${colors ? accent : "#f3f4f6"}; padding: 10px 24px; font-size: 0;">`,
-        `<span data-ee-publish-chrome="true" style="display: inline-block; font-size: 11px; color: ${colors ? "rgba(255,255,255,0.92)" : "#374151"}; font-weight: 600; letter-spacing: 0.8px; vertical-align: middle;">EDGEEVER · 精选笔记</span>`,
-        `</section>`,
+        `<section data-ee-cover-footer="true" data-ee-publish-chrome="true" style="${colors ? accentGradient : "background: #f3f4f6;"} height: 8px; font-size: 0; line-height: 0;"><span leaf=""><br></span></section>`,
       ].join("");
     });
+  }
 
+  if (proseStyle.showChapterNavigation) {
     const h2ListForToc = Array.from(root.querySelectorAll<HTMLElement>("h2"));
     if (h2ListForToc.length >= 2 && !root.querySelector("[data-ee-toc-cards]")) {
       const toc = document.createElement("section");
@@ -195,28 +226,26 @@ const applyLegacyWeChatStyles = (
       toc.setAttribute("data-ee-toc-cards", "true");
       toc.style.cssText = "margin: 0 0 28px;";
       const cardsHtml = h2ListForToc.map((heading, index) => {
-        const num = String(index + 1).padStart(2, "0");
-        const rawText = (heading.textContent || "")
-          .replace(/^\s*(?:第[一二三四五六七八九十百\d]+[章节部分篇]\s*[：:·.\s]*|\d+\s*[.、·:：]\s*|[一二三四五六七八九十]+\s*[、.．]\s*)/u, "")
-          .trim();
-        const shortTitle = rawText.slice(0, 6) || `章节 ${num}`;
-        const subTitle = rawText.length > 6 ? rawText.slice(6, 18) : `PART ${num}`;
-        const isHighlighted = index < h2ListForToc.length - 1 || h2ListForToc.length === 2 && index === 0;
-        const useSolidAccent = isHighlighted && Boolean(colors);
-        if (useSolidAccent) {
+        const labels = deriveChapterCardLabels(heading.textContent || "", index);
+        const num = labels.num;
+        const shortTitle = escapeHtmlAttribute(labels.shortTitle);
+        const subTitle = escapeHtmlAttribute(labels.subTitle);
+        const isHighlighted = index < h2ListForToc.length - 1 || (h2ListForToc.length === 2 && index === 0);
+        const useAccentGradient = isHighlighted && Boolean(colors);
+        if (useAccentGradient) {
           return [
-            `<section data-ee-publish-chrome="true" style="display: inline-block; vertical-align: top; width: 136px; box-sizing: border-box; background: ${accent}; border-radius: 12px; padding: 12px; margin: 0 8px 8px 0;">`,
-            `<p data-ee-publish-chrome="true" style="font-size: 9px; font-weight: 700; color: rgba(255,255,255,0.72); letter-spacing: 1px; margin: 0 0 5px;">${num}</p>`,
+            `<section data-ee-toc-card="true" data-ee-publish-chrome="true" style="display: inline-block; vertical-align: top; min-width: 0; width: 146px; max-width: 100%; flex: 0 0 auto; box-sizing: border-box; border: 1px solid transparent; ${accentGradient} border-radius: 12px; padding: 12px; margin: 0;">`,
+            `<p data-ee-publish-chrome="true" style="font-size: 9px; line-height: 1.4; font-weight: 700; color: rgba(255,255,255,0.72); letter-spacing: 1px; margin: 0 0 5px;">${num}</p>`,
             `<p data-ee-publish-chrome="true" style="font-size: 13px; font-weight: 800; color: #ffffff; margin: 0 0 3px; line-height: 1.3;">${shortTitle}</p>`,
-            `<p data-ee-publish-chrome="true" style="font-size: 10px; color: rgba(255,255,255,0.75); margin: 0; line-height: 1.4;">${subTitle}</p>`,
+            `<p data-ee-publish-chrome="true" style="font-size: 10px; color: rgba(255,255,255,0.75); margin: 0; line-height: 1.4; word-break: break-word;">${subTitle}</p>`,
             `</section>`,
           ].join("");
         }
         return [
-          `<section data-ee-publish-chrome="true" style="display: inline-block; vertical-align: top; width: 136px; box-sizing: border-box; background: ${isHighlighted ? "#f3f4f6" : "#ffffff"}; border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; margin: 0 8px 8px 0;">`,
-          `<p data-ee-publish-chrome="true" style="font-size: 9px; font-weight: 700; color: #6b7280; letter-spacing: 1px; margin: 0 0 5px;">${num}</p>`,
+          `<section data-ee-toc-card="true" data-ee-publish-chrome="true" style="display: inline-block; vertical-align: top; min-width: 0; width: 146px; max-width: 100%; flex: 0 0 auto; box-sizing: border-box; background: ${isHighlighted ? "#f3f4f6" : "#ffffff"}; border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; margin: 0;">`,
+          `<p data-ee-publish-chrome="true" style="font-size: 9px; line-height: 1.4; font-weight: 700; color: #6b7280; letter-spacing: 1px; margin: 0 0 5px;">${num}</p>`,
           `<p data-ee-publish-chrome="true" style="font-size: 13px; font-weight: 800; color: #111827; margin: 0 0 3px; line-height: 1.3;">${shortTitle}</p>`,
-          `<p data-ee-publish-chrome="true" style="font-size: 10px; color: #6b7280; margin: 0; line-height: 1.4;">${subTitle}</p>`,
+          `<p data-ee-publish-chrome="true" style="font-size: 10px; color: #6b7280; margin: 0; line-height: 1.4; word-break: break-word;">${subTitle}</p>`,
           `</section>`,
         ].join("");
       }).join("");
@@ -224,7 +253,7 @@ const applyLegacyWeChatStyles = (
         `<section data-ee-publish-chrome="true" style="margin-bottom: 10px;">`,
         `<p data-ee-publish-chrome="true" style="font-size: 10px; color: #9ca3af; margin: 0; text-transform: uppercase; letter-spacing: 2px; font-weight: 600;">${h2ListForToc.length} PARTS · 全文导览</p>`,
         `</section>`,
-        `<section data-ee-publish-chrome="true" style="font-size: 0;">${cardsHtml}</section>`,
+        `<section data-ee-publish-chrome="true" style="display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 8px; width: 100%; align-items: stretch; font-size: 0;">${cardsHtml}</section>`,
       ].join("");
       h2ListForToc[0].parentElement?.insertBefore(toc, h2ListForToc[0]);
     }
@@ -253,20 +282,10 @@ const applyLegacyWeChatStyles = (
         `</section>`,
         `<span data-ee-publish-chrome="true" style="display: inline-block; width: 1px; height: 36px; background: #e5e7eb; vertical-align: middle; margin: 0 16px;"><span leaf=""><br></span></span>`,
         `<section data-ee-publish-chrome="true" style="display: inline-block; vertical-align: middle; max-width: calc(100% - 86px);">`,
-        `<p data-ee-publish-chrome="true" style="margin: 0; font-size: 17px; font-weight: 900; color: #111827; letter-spacing: 0.3px; line-height: 1.3;">${titleHtml}</p>`,
+        `<p data-ee-publish-chrome="true" style="margin: 0; font-size: ${metrics.fontSize * 1.4}px; font-weight: 900; color: #111827; letter-spacing: 0.3px; line-height: 1.3;">${titleHtml}</p>`,
         `<p data-ee-publish-chrome="true" style="margin: 3px 0 0; font-size: 11px; font-weight: 600; color: #9ca3af; letter-spacing: 1px; line-height: 1.3;">${subLabel}</p>`,
         `</section>`,
       ].join("");
-    });
-
-    root.querySelectorAll<HTMLElement>("h3").forEach((heading) => {
-      if (heading.querySelector("[data-ee-pill-dot]")) return;
-      const dot = document.createElement("span");
-      dot.setAttribute("data-ee-publish-chrome", "true");
-      dot.setAttribute("data-ee-pill-dot", "true");
-      dot.style.cssText = `display: inline-block; width: 6px; height: 6px; background: ${accent}; border-radius: 50%; margin-right: 6px; vertical-align: middle;`;
-      dot.innerHTML = "<span leaf=\"\"><br></span>";
-      heading.insertBefore(dot, heading.firstChild);
     });
   }
 
@@ -295,9 +314,9 @@ const applyInlineStyles = (
   root: HTMLElement,
   metrics: WeChatMetrics,
   colors: NoteProsePaletteColors | null,
-  customCss?: string,
-  accentOnly = false,
-  proseStyle: NoteProseStylePreferences = DEFAULT_NOTE_PROSE_STYLE_PREFERENCES,
+  customCss: string,
+  accentOnly: boolean,
+  proseStyle: PublishProseStyle,
 ) => {
   applyLegacyWeChatStyles(root, metrics, colors, accentOnly, proseStyle);
 
@@ -324,15 +343,6 @@ const blobToDataUrl = (blob: Blob) => new Promise<string>((resolve, reject) => {
   reader.onerror = () => reject(reader.error ?? new Error("Could not read image for clipboard"));
   reader.readAsDataURL(blob);
 });
-
-const WECHAT_IMAGE_MIME_TYPES = new Set([
-  "image/bmp",
-  "image/png",
-  "image/jpeg",
-  "image/jpg",
-  "image/gif",
-  "image/webp",
-]);
 
 const canvasToPng = (canvas: HTMLCanvasElement) => new Promise<Blob>((resolve, reject) => {
   canvas.toBlob((png) => {
@@ -392,11 +402,12 @@ const rasterizeBlob = async (blob: Blob) => {
   }
 };
 
-const convertImageToPng = async (blob: Blob) => {
-  if (WECHAT_IMAGE_MIME_TYPES.has(blob.type.toLocaleLowerCase())) {
-    return blob;
-  }
-
+const preparePublishImage = async (blob: Blob) => {
+  // Preserve raster containers byte-for-byte, including every animation frame.
+  // Sniff headers too: resource endpoints may return a generic content type.
+  const mime = detectPublishImageMimeType(new Uint8Array(await blob.slice(0, 256).arrayBuffer()));
+  if (mime) return blob.type === mime ? blob : new Blob([blob], { type: mime });
+  if (isPublishImageMimeType(blob.type.toLowerCase())) throw new Error("Image bytes do not match their format");
   return rasterizeBlob(blob);
 };
 
@@ -415,12 +426,6 @@ const getSvgSize = (svg: string) => {
 };
 
 const WECHAT_MERMAID_MAX_EDGE = 1280;
-
-const prepareSvgMarkup = (svg: string) => {
-  const markup = svg.trim();
-  if (/<svg\b[^>]*\sxmlns=/.test(markup)) return markup;
-  return markup.replace(/<svg\b/, '<svg xmlns="http://www.w3.org/2000/svg"');
-};
 
 const canvasToJpeg = (canvas: HTMLCanvasElement, quality = 0.86) =>
   new Promise<Blob>((resolve, reject) => {
@@ -480,50 +485,45 @@ const rasterizePublishOrnamentsForWeChat = async (root: HTMLElement) => {
 };
 
 const svgToWeChatImage = async (svg: string) => {
-  const markup = prepareSvgMarkup(svg);
+  const markup = normalizeMermaidSvgForViewer(svg);
   const size = getSvgSize(markup);
-  const objectUrl = URL.createObjectURL(new Blob([markup], { type: "image/svg+xml;charset=utf-8" }));
-  try {
-    const image = new Image();
-    image.src = objectUrl;
-    await image.decode();
-    const naturalWidth = image.naturalWidth || size.width;
-    const naturalHeight = image.naturalHeight || size.height;
-    const scale = Math.min(2, WECHAT_MERMAID_MAX_EDGE / Math.max(naturalWidth, naturalHeight, 1));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(naturalWidth * scale));
-    canvas.height = Math.max(1, Math.round(naturalHeight * scale));
-    const context = canvas.getContext("2d");
-    if (!context) {
-      throw new Error("Could not create image canvas");
-    }
-    context.fillStyle = "#ffffff";
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    const displayWidth = Math.min(size.width || naturalWidth, 677);
-    const displayHeight = displayWidth * (naturalHeight / Math.max(naturalWidth, 1));
-    return {
-      blob: await canvasToJpeg(canvas),
-      width: displayWidth,
-      height: displayHeight,
-    };
-  } finally {
-    URL.revokeObjectURL(objectUrl);
+  const image = new Image();
+  // A Blob URL can taint the canvas when Mermaid uses HTML labels.
+  image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(markup)}`;
+  await image.decode();
+  const naturalWidth = image.naturalWidth || size.width;
+  const naturalHeight = image.naturalHeight || size.height;
+  const scale = Math.min(2, WECHAT_MERMAID_MAX_EDGE / Math.max(naturalWidth, naturalHeight, 1));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(naturalHeight * scale));
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Could not create image canvas");
   }
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  const displayWidth = Math.min(size.width || naturalWidth, 677);
+  const displayHeight = displayWidth * (naturalHeight / Math.max(naturalWidth, 1));
+  return {
+    blob: await canvasToJpeg(canvas),
+    width: displayWidth,
+    height: displayHeight,
+  };
 };
 
-const renderMermaidSvg = async (source: string) => {
-  const { renderMermaidSVG, THEMES } = await import("beautiful-mermaid");
-  return scaleMermaidSvg(renderMermaidSVG(source, {
-    ...THEMES["zinc-light"],
-    ...MERMAID_THEME_PALETTES["zinc-light"],
-    transparent: true,
-    font: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
-    padding: 24,
-  }));
-};
+const renderMermaidSvg = (source: string) => renderThemedMermaidSvg(source, {
+  palette: MERMAID_THEME_PALETTES["zinc-light"],
+  font: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
+  padding: 24,
+});
 
-const embedMermaidForWeChat = async (root: HTMLElement, editor?: Editor) => {
+const embedMermaidForWeChat = async (
+  root: HTMLElement,
+  editor?: Editor,
+  uploadImage = createConfiguredPublishImageUploader(),
+) => {
   const codeBlocks = Array.from(root.querySelectorAll<HTMLElement>("pre > code.language-mermaid"));
   if (codeBlocks.length === 0) {
     return;
@@ -532,11 +532,11 @@ const embedMermaidForWeChat = async (root: HTMLElement, editor?: Editor) => {
   const renderedBlocks = editor
     ? Array.from(editor.view.dom.querySelectorAll<HTMLElement>(".edgeever-mermaid-code-block"))
     : [];
-  await Promise.all(codeBlocks.map(async (codeBlock, index) => {
+  for (const [index, codeBlock] of codeBlocks.entries()) {
     const source = codeBlock.textContent?.trim();
     const pre = codeBlock.closest("pre");
     if (!source || !pre) {
-      return;
+      continue;
     }
 
     try {
@@ -546,78 +546,71 @@ const embedMermaidForWeChat = async (root: HTMLElement, editor?: Editor) => {
       } catch {
         svg = renderedBlocks[index]?.querySelector("svg")?.outerHTML || "";
       }
-      if (!svg) return;
+      if (!svg) throw new PublishImageError("render");
 
       const { blob, width, height } = await svgToWeChatImage(svg);
       const paragraph = document.createElement("p");
       paragraph.style.cssText = "text-align: center; margin: 1em 0;";
       const image = document.createElement("img");
-      image.src = await blobToDataUrl(blob);
+      image.src = await uploadImage(blob);
+      image.setAttribute("data-ee-published-image", "true");
       image.width = Math.round(width);
       image.height = Math.round(height);
       image.alt = "Mermaid diagram";
       image.style.cssText = "display: inline-block; max-width: 100%; height: auto;";
       paragraph.appendChild(image);
       pre.replaceWith(paragraph);
-    } catch {
-      // Preserve the Mermaid source as a readable fallback when rendering fails.
+    } catch (error) {
+      if (error instanceof PublishImageError) throw error;
+      throw new PublishImageError("render", { cause: error });
     }
-  }));
-};
-
-const isSameOrigin = (source: string) => {
-  try {
-    return new URL(source, window.location.href).origin === window.location.origin;
-  } catch {
-    return false;
   }
 };
 
 const isContentImage = (image: HTMLImageElement) =>
   Boolean(image.getAttribute("src")?.trim()) && !image.classList.contains("ProseMirror-separator");
 
-const findOriginalImage = (source: string, originals: HTMLImageElement[]) => {
-  const match = originals.find((image) => image.getAttribute("src") === source || image.currentSrc === source);
-  if (match) return match;
-  try {
-    const resolved = new URL(source, window.location.href).href;
-    return originals.find((image) => image.src === resolved) ?? null;
-  } catch {
-    return null;
-  }
+export const loadPublishImage = async (source: string) => {
+  const normalized = toApiResourceUrl(source);
+  const base = getConfiguredDesktopApiBaseUrl() || window.location.origin;
+  const url = new URL(normalized, `${base}/`);
+  const ownOrigin = url.origin === new URL(base).origin || url.origin === window.location.origin;
+  // Relative resource requests use the authenticated client, including desktop
+  // bearer tokens. Never forward instance credentials to an external image host.
+  const response = ownOrigin && /^\/api\/v1\/resources\/[^/]+\/blob$/.test(url.pathname)
+    ? await api.getResourceResponse(`${url.pathname}${url.search}`)
+    : await fetch(url.href, { credentials: "same-origin" });
+  if (!response.ok) throw new Error(`Could not fetch image (${response.status})`);
+  return preparePublishImage(await response.blob());
 };
 
-const embedImagesForWeChat = async (root: HTMLElement, originalImages: HTMLImageElement[] = []) => {
+export const embedImagesForWeChat = async (
+  root: HTMLElement,
+  uploadImage = createConfiguredPublishImageUploader(),
+) => {
   const images = Array.from(root.querySelectorAll<HTMLImageElement>("img")).filter(isContentImage);
-  const originals = originalImages.filter(isContentImage);
-  await Promise.all(images.map(async (image) => {
+  const loaded = new Map<string, Promise<Blob>>();
+  for (const image of images) {
+    // Formula images carry native Zhihu math metadata; retain that editable path.
+    if (image.hasAttribute("data-ee-published-image") || image.matches("img.ztext-math[data-tex]")) continue;
     const source = image.getAttribute("src")?.trim();
-    if (!source || source.startsWith("data:")) {
-      return;
-    }
-
+    if (!source) continue;
     try {
-      const originalImage = findOriginalImage(source, originals);
-      if (originalImage) {
-        image.setAttribute("src", await blobToDataUrl(await rasterizeImageElement(originalImage)));
-        image.removeAttribute("srcset");
-        return;
+      let blob = loaded.get(source);
+      if (!blob) {
+        // Never substitute a canvas snapshot when original bytes are unavailable:
+        // that would silently flatten animations to their first frame.
+        blob = loadPublishImage(source);
+        loaded.set(source, blob);
       }
-
-      const response = await fetch(source, { credentials: "include" });
-      if (!response.ok) {
-        throw new Error(`Could not fetch image (${response.status})`);
-      }
-      image.setAttribute("src", await blobToDataUrl(await convertImageToPng(await response.blob())));
+      image.setAttribute("src", await uploadImage(await blob));
+      image.setAttribute("data-ee-published-image", "true");
       image.removeAttribute("srcset");
-    } catch {
-      // Never put a private same-origin URL into the clipboard: WeChat cannot access it.
-      if (isSameOrigin(source)) {
-        image.removeAttribute("src");
-        image.removeAttribute("srcset");
-      }
+    } catch (error) {
+      if (error instanceof PublishImageError) throw error;
+      throw new PublishImageError("upload", { cause: error });
     }
-  }));
+  }
 };
 
 const convertImageGalleriesForWeChat = (root: HTMLElement) => {
@@ -627,31 +620,17 @@ const convertImageGalleriesForWeChat = (root: HTMLElement) => {
     );
     if (images.length < 2) return;
 
-    const layout = gallery.getAttribute("data-image-gallery-layout");
-    let columns = Math.min(images.length, 3);
-    if (layout === "1") {
-      columns = 1;
-    } else if (layout === "2" || (layout !== "3" && images.length === 4)) {
-      columns = 2;
-    } else if (layout === "3") {
-      columns = 3;
-    }
-    const table = document.createElement("table");
-    table.setAttribute("role", "presentation");
-    table.style.cssText = "width: 100%; margin: 1em 0; border: 0; border-collapse: separate; border-spacing: 6px; table-layout: fixed;";
-    const body = document.createElement("tbody");
-
-    images.forEach((image, index) => {
-      if (index % columns === 0) body.appendChild(document.createElement("tr"));
-      const cell = document.createElement("td");
-      cell.style.cssText = `width: ${100 / columns}%; border: 0; padding: 0; vertical-align: middle;`;
-      image.style.cssText = "display: block; width: 100%; height: auto; max-height: 18em; margin: 0; border-radius: 6px; object-fit: cover;";
-      cell.appendChild(image);
-      body.lastElementChild?.appendChild(cell);
+    // Zhihu imports only the first image from a presentation table. Publish
+    // each original separately so neither images nor animation frames disappear.
+    const fragment = document.createDocumentFragment();
+    images.forEach((image) => {
+      const paragraph = document.createElement("p");
+      paragraph.style.cssText = "margin: 1em 0; text-align: center;";
+      image.style.cssText = "display: inline-block; max-width: 100%; height: auto; margin: 0; border-radius: 6px;";
+      paragraph.appendChild(image);
+      fragment.appendChild(paragraph);
     });
-
-    table.appendChild(body);
-    gallery.replaceWith(table);
+    gallery.replaceWith(fragment);
   });
 };
 
@@ -1161,6 +1140,18 @@ const canvasHasInk = (canvas: HTMLCanvasElement) => {
   return false;
 };
 
+export const createPublishMathImage = (latex: string, png: string) => {
+  const image = document.createElement("img");
+  image.alt = latex.trim();
+  image.src = png;
+  // Zhihu imports ordinary data-URL images as uploads, which fail for formulas.
+  // Its math importer consumes data-tex instead, preserving an editable formula.
+  // Keep the local PNG for publishing editors that do not understand this marker.
+  image.classList.add("ztext-math");
+  image.setAttribute("data-tex", latex.trim());
+  return image;
+};
+
 const rasterizeMathForWeChat = async (root: HTMLElement) => {
   const hosts = Array.from(root.querySelectorAll<HTMLElement>("[data-ee-math]"));
   if (hosts.length === 0) return;
@@ -1186,9 +1177,7 @@ const rasterizeMathForWeChat = async (root: HTMLElement) => {
       if (canvas.width < 2 || canvas.height < 2 || !canvasHasInk(canvas)) continue;
       const cssWidth = Math.max(1, Math.round(canvas.width / 2));
       const cssHeight = Math.max(1, Math.round(canvas.height / 2));
-      const image = document.createElement("img");
-      image.alt = latex.trim();
-      image.src = canvas.toDataURL("image/png");
+      const image = createPublishMathImage(latex, canvas.toDataURL("image/png"));
       if (kind === "block") {
         const width = Math.min(cssWidth, WECHAT_CONTENT_WIDTH);
         const height = Math.max(1, Math.round(cssHeight * (width / cssWidth)));
@@ -1247,13 +1236,16 @@ export const readEditorCopyContext = (from?: HTMLElement | null) => {
   }
   const customStyleTag = container?.querySelector<HTMLStyleElement>("style[data-theme-custom-css]");
   const storedStyle = readNoteProseStylePreference();
-  const proseStyle: NoteProseStylePreferences = {
+  const proseStyle: PublishProseStyle = {
+    paragraphSpacing: parseNoteProseParagraphSpacing(readCssNumber(style?.getPropertyValue("--editor-paragraph-spacing"), storedStyle.paragraphSpacing)) ?? storedStyle.paragraphSpacing,
+    textAlign: parseNoteProseTextAlign(style?.getPropertyValue("--editor-body-text-align").trim()) ?? storedStyle.textAlign,
+    letterSpacing: parseNoteProseLetterSpacing(style?.getPropertyValue("--editor-body-letter-spacing").trim()) ?? storedStyle.letterSpacing,
     headingStyle: parseNoteProseHeadingStyle(container?.dataset.noteHeadingStyle) ?? storedStyle.headingStyle,
     quoteStyle: parseNoteProseQuoteStyle(container?.dataset.noteQuoteStyle) ?? storedStyle.quoteStyle,
     emphasisStyle: parseNoteProseEmphasisStyle(container?.dataset.noteEmphasisStyle) ?? storedStyle.emphasisStyle,
-    showMagazineCover: container?.dataset.noteMagazineCover !== undefined
-      ? container.dataset.noteMagazineCover === "true"
-      : storedStyle.showMagazineCover,
+    coverTags: readNoteCoverTags(container?.dataset.noteTags),
+    showMagazineCover: container?.dataset.noteMagazineCover === "true",
+    showChapterNavigation: container?.dataset.noteChapterNavigation === "true",
   };
   return {
     fontSize,
@@ -1270,7 +1262,9 @@ export const preparePublishArticle = (
   html: string,
   from?: HTMLElement | null,
 ) => {
-  const root = document.createElement("div");
+  // Zhihu treats a wrapping div as one text block, flattening nested headings
+  // and paragraphs. A section retains the shared styles and block semantics.
+  const root = document.createElement("section");
   root.innerHTML = html;
   flattenDetailsForLinearHtml(root);
   const context = readEditorCopyContext(from);
@@ -1306,11 +1300,11 @@ export const prepareMarkdownPublishArticle = (markdown: string, from?: HTMLEleme
 
 export const buildWeChatClipboardHtml = async (editor: Editor) => {
   const container = preparePublishArticle(editor.getHTML(), editor.view.dom);
+  const uploadImage = createConfiguredPublishImageUploader();
   await rasterizeMathForWeChat(container);
-  await embedMermaidForWeChat(container, editor);
-  const originalImages = Array.from(editor.view.dom.querySelectorAll<HTMLImageElement>("img")).filter(isContentImage);
-  await embedImagesForWeChat(container, originalImages);
+  await embedMermaidForWeChat(container, editor, uploadImage);
   await rasterizePublishOrnamentsForWeChat(container);
+  await embedImagesForWeChat(container, uploadImage);
   return container.outerHTML;
 };
 
@@ -1319,10 +1313,11 @@ export const copyEditorToWeChat = async (editor: Editor) =>
 
 export const buildMarkdownWeChatHtml = async (markdown: string) => {
   const container = prepareMarkdownPublishArticle(markdown);
+  const uploadImage = createConfiguredPublishImageUploader();
   await rasterizeMathForWeChat(container);
-  await embedMermaidForWeChat(container);
-  await embedImagesForWeChat(container);
+  await embedMermaidForWeChat(container, undefined, uploadImage);
   await rasterizePublishOrnamentsForWeChat(container);
+  await embedImagesForWeChat(container, uploadImage);
   return { html: container.outerHTML, text: container.textContent ?? "" };
 };
 

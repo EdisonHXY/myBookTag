@@ -14,6 +14,7 @@ export const NOTE_PROSE_PALETTE_IDS = [
   "azure",
   "violet",
   "pink",
+  "rose",
   "slate",
 ] as const;
 export type NoteProsePaletteId = (typeof NOTE_PROSE_PALETTE_IDS)[number];
@@ -45,11 +46,30 @@ export const NOTE_PROSE_EMPHASIS_STYLES = [
 export type NoteProseEmphasisStyle = (typeof NOTE_PROSE_EMPHASIS_STYLES)[number];
 export const DEFAULT_NOTE_PROSE_EMPHASIS_STYLE: NoteProseEmphasisStyle = "default";
 
+export const NOTE_PROSE_PARAGRAPH_SPACINGS = [8, 12, 16] as const;
+export type NoteProseParagraphSpacing = (typeof NOTE_PROSE_PARAGRAPH_SPACINGS)[number];
+export const NOTE_PROSE_TEXT_ALIGNS = ["left", "justify"] as const;
+export type NoteProseTextAlign = (typeof NOTE_PROSE_TEXT_ALIGNS)[number];
+export const NOTE_PROSE_LETTER_SPACINGS = ["default", "0.5px", "1px"] as const;
+export type NoteProseLetterSpacing = (typeof NOTE_PROSE_LETTER_SPACINGS)[number];
+
+export const parseNoteProseParagraphSpacing = (value: unknown): NoteProseParagraphSpacing | null =>
+  typeof value === "number" && (NOTE_PROSE_PARAGRAPH_SPACINGS as readonly number[]).includes(value)
+    ? value as NoteProseParagraphSpacing : null;
+export const parseNoteProseTextAlign = (value: unknown): NoteProseTextAlign | null =>
+  typeof value === "string" && (NOTE_PROSE_TEXT_ALIGNS as readonly string[]).includes(value)
+    ? value as NoteProseTextAlign : null;
+export const parseNoteProseLetterSpacing = (value: unknown): NoteProseLetterSpacing | null =>
+  typeof value === "string" && (NOTE_PROSE_LETTER_SPACINGS as readonly string[]).includes(value)
+    ? value as NoteProseLetterSpacing : null;
+
 export type NoteProseStylePreferences = {
+  paragraphSpacing: NoteProseParagraphSpacing;
+  textAlign: NoteProseTextAlign;
+  letterSpacing: NoteProseLetterSpacing;
   headingStyle: NoteProseHeadingStyle;
   quoteStyle: NoteProseQuoteStyle;
   emphasisStyle: NoteProseEmphasisStyle;
-  showMagazineCover: boolean;
 };
 
 export const MAX_NOTE_PROSE_CSS_BYTES = 8 * 1024;
@@ -217,6 +237,17 @@ export const NOTE_PROSE_PALETTES: Record<NoteProsePaletteId, NoteProsePaletteCol
     codeText: "#BE185D",
     background: "#FFFFFF",
   }),
+  rose: palette({
+    accent: "#DF1658",
+    text: "#3E3E3E",
+    muted: "#746068",
+    surface: "#FFF8FA",
+    divider: "#F5C7D6",
+    link: "#B7144A",
+    codeBackground: "#FFF0F5",
+    codeText: "#B7144A",
+    background: "#FFFFFF",
+  }),
   slate: palette({
     accent: "#796B7C",
     text: "#5C505E",
@@ -239,6 +270,7 @@ export const NOTE_PROSE_DARK_ACCENTS: Record<NoteProsePaletteId, string> = {
   azure: "#8CB4F0",
   violet: "#B39AE8",
   pink: "#E794B0",
+  rose: "#FF7AA6",
   slate: "#BCACBF",
 };
 
@@ -436,3 +468,11 @@ export const noteProseCssVariables = (prose: ResolvedNoteProse): Record<string, 
   variables["--note-palette-bg"] = colors.background;
   return variables;
 };
+
+/** Independent reading rhythm shared by editor, publishing preview, and print. */
+export const noteProseStyleCssVariables = (style: Partial<NoteProseStylePreferences>): Record<string, string> => ({
+  "--editor-paragraph-spacing": `${parseNoteProseParagraphSpacing(style.paragraphSpacing) ?? 8}px`,
+  "--editor-body-text-align": parseNoteProseTextAlign(style.textAlign) ?? "left",
+  "--editor-body-letter-spacing": parseNoteProseLetterSpacing(style.letterSpacing) === null || style.letterSpacing === "default"
+    ? "-0.005em" : style.letterSpacing!,
+});

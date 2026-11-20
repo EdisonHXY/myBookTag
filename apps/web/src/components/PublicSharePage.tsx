@@ -26,7 +26,7 @@ import {
   type ShareBodyAccess,
   getMemoDisplayTitle,
 } from "@edgeever/shared";
-import { resolveSupportedLocale } from "@edgeever/shared/i18n/locales";
+import { resolveSupportedLocale, type SupportedLocale } from "@edgeever/shared/i18n/locales";
 import { activateHeadingAnchorClick } from "@/lib/editor-heading-anchor";
 import { applyEditorBodyFontPreference } from "@/lib/editor-body-font";
 import { createEdgeEverMathematics } from "@edgeever/shared/mathematics";
@@ -34,10 +34,12 @@ import { PdfAttachment } from "@/components/editor/PdfAttachment";
 import { FileAttachment } from "@/components/editor/FileAttachment";
 import { NotebookSiteCodeBlock } from "./NotebookSiteCodeBlock";
 import { NotebookSiteArticleTools } from "./NotebookSiteArticleTools";
+import { PublicArticleOutline } from "./PublicArticleOutline";
 import { NotebookSiteSearchContext } from "./NotebookSiteSearch";
 import { useAppearanceTheme } from "./ThemeProvider";
 
 const ReadOnlyX6Diagram = lazy(() => import("@/components/ReadOnlyX6Diagram"));
+const ReadOnlyInfographic = lazy(() => import("@/components/ReadOnlyInfographic"));
 const ImageViewer = lazy(() => import("@/components/editor/ImageViewer").then((module) => ({ default: module.ImageViewer })));
 
 const SharedImage = Image.extend({
@@ -168,7 +170,7 @@ const SharedDocument = ({
   access,
   site = false,
 }: {
-  locale: "zh-CN" | "en-US" | "ja" | "pl" | "ru";
+  locale: SupportedLocale;
   share: PublicMemoShare;
   token: string;
   access?: ShareBodyAccess;
@@ -176,6 +178,13 @@ const SharedDocument = ({
 }) => {
   const { resolvedTheme } = useAppearanceTheme();
   const body = useMemo(() => resolvePublicShareBody(share, token, access), [share, token, access]);
+  if (body.type === "infographic") {
+    return (
+      <Suspense fallback={<div className="flex min-h-[360px] items-center justify-center text-slate-400"><LoaderCircle className="h-6 w-6 animate-spin" /></div>}>
+        <ReadOnlyInfographic syntax={body.infographic.syntax} />
+      </Suspense>
+    );
+  }
   if (body.type === "diagram") {
     return (
       <Suspense
@@ -331,6 +340,7 @@ export const PublicShareArticle = ({
 }) => {
   const { t, i18n } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
+  const [outlineAvailable, setOutlineAvailable] = useState(false);
   const openSearch = useContext(NotebookSiteSearchContext);
   const publishedBodyFont = parsePublishedNoteBodyFont(share.bodyFont);
   const showUpdatedAt = layout === "site" || share.showUpdatedAt !== false;
@@ -356,8 +366,10 @@ export const PublicShareArticle = ({
     <div
       ref={containerRef}
       className={cn(
-        "edgeever-public-share",
-        layout === "site" ? "py-6 sm:py-8 xl:pr-56" : "px-4 py-6 sm:px-8 sm:py-10",
+        "edgeever-public-share relative",
+        layout === "site"
+          ? "py-6 sm:py-8 xl:pr-56"
+          : cn("px-4 py-6 sm:px-8 sm:py-10", outlineAvailable && "xl:pr-56"),
       )}
     >
       <article
@@ -457,6 +469,7 @@ export const PublicShareArticle = ({
           </footer>
         ) : null}
       </article>
+      <PublicArticleOutline containerRef={containerRef} onAvailableChange={setOutlineAvailable} />
       {layout === "site" && <NotebookSiteArticleTools containerRef={containerRef} token={token} memoUrls={access?.memoUrls ?? {}} />}
     </div>
   );

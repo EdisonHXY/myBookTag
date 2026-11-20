@@ -1,38 +1,29 @@
 {
-  "version": "2.17.0",
+  "version": "2.31.0",
   "changes": {
     "en-US": [
-      "Import notes from Evernote, Obsidian and Joplin while retaining notebooks, attachments and links; large-library backup and initial sync read fewer database rows. Thanks @sivdead (#747, #657).",
-      "Set an optional expiry for single-note share links and see their open counts. Thanks @dkoryto (#753, #607).",
-      "Customize reading styles with an emerald palette, composable headings and quotes, an independent magazine cover, image cards and neutral inline code; reading and editor settings are organized separately.",
-      "Use configurable shortcuts to focus the note title or body. Thanks @dkoryto (#760, #762).",
-      "Remember note sorting across restarts and keep title-sorted notes in place after editing. Thanks @sivdead (#757, #754, #750).",
-      "Keep authenticated desktop local workspaces available during temporary server failures and clearly diagnose exhausted database daily quotas.",
-      "Desktop backups follow the system network settings and fetch current attachments; start manual backups directly and choose from simpler schedules. Thanks @sivdead (#755).",
-      "Fix concurrent Android local database writes when sharing images into notes.",
-      "Fix notebook icon selection in Safari. Thanks @thorufur (#746)."
+      "Restrict API tokens to selected notebooks and their sub-notebooks, with read-only or read/write access. Existing tokens retain their access.",
+      "Import individual Markdown files or folders. Folder imports preserve subfolders and resolve local attachments and links between notes.",
+      "Save named views with filters and multi-column sorting in structured tables, scroll large tables more smoothly, and open URLs directly from link cells.",
+      "Fix selecting Joplin .jex files in mobile browsers and prevent Evernote task titles and dates from appearing in imported note text.",
+      "Refresh the EdgeEver logo and app icons, update the Demo example notes, and refine separators in merged notes.",
+      "Reduce redundant sync and plugin requests, and preserve active authentication settings by default when redeploying to Cloudflare."
     ],
     "zh-CN": [
-      "支持导入印象笔记、Obsidian 和 Joplin，保留笔记本、附件与链接，并减少大笔记库备份和首次同步的数据库读取量。感谢 @sivdead（#747、#657）。",
-      "单篇笔记分享链接支持设置有效期和查看打开次数。感谢 @dkoryto（#753、#607）。",
-      "新增翡翠绿配色及可组合的标题、引用阅读样式，杂志封面可独立设置，统一图片卡片与行内代码样式，并分开整理阅读与编辑设置。",
-      "支持使用可配置快捷键聚焦笔记标题或正文。感谢 @dkoryto（#760、#762）。",
-      "重启后保留笔记排序偏好，并修复按标题排序时编辑笔记后位置变化的问题。感谢 @sivdead（#757、#754、#750）。",
-      "服务器暂时故障时保留已认证桌面本地工作区的可用性，并明确提示数据库每日额度耗尽。",
-      "桌面备份遵循系统网络设置并读取最新附件，手动备份可直接启动，定时备份频率选择更简洁。感谢 @sivdead（#755）。",
-      "修复 Android 分享图片到笔记时本地数据库并发写入的问题。",
-      "修复 Safari 中笔记本图标选择不稳定的问题。感谢 @thorufur（#746）。"
+      "API Token 可限制在指定笔记本及其子笔记本内，并设为只读或读写。现有 Token 保留原有权限。",
+      "支持导入单个 Markdown 文件或整个目录。目录导入保留子目录层级，并解析本地附件和笔记间链接。",
+      "多维表格支持保存带筛选和多字段排序的命名视图，大表格滚动更流畅，链接字段可直接点击打开。",
+      "修复移动浏览器中无法选择 Joplin .jex 文件的问题，并避免 Evernote 任务标题和日期混入导入后的笔记正文。",
+      "更新 EdgeEver 标志、应用图标和 Demo 示例笔记，并调整合并笔记的分隔线。",
+      "减少重复同步和插件请求，重新部署到 Cloudflare 时默认保留正在生效的登录配置。"
     ],
     "ja": [
-      "Evernote・Obsidian・Joplinからノートブック、添付ファイル、リンクを保ってインポートできます。大規模ライブラリのバックアップと初回同期の読み取り量も削減しました。",
-      "単一ノートの共有リンクに有効期限を設定し、閲覧回数を確認できます。",
-      "エメラルド配色や組み合わせ可能な見出し・引用スタイル、独立した雑誌風表紙、画像カードに対応し、読書設定と編集設定を整理しました。",
-      "設定可能なショートカットでノートのタイトルや本文にフォーカスできます。",
-      "再起動後もノートの並び順を保持し、編集後にタイトル順の位置が変わる問題を修正しました。",
-      "サーバーの一時障害中も認証済みデスクトップのローカル作業を継続でき、データベースの日次上限超過を明確に表示します。",
-      "デスクトップのバックアップがシステムのネットワーク設定に従い、最新の添付ファイルを取得します。手動実行とスケジュール選択も簡素化しました。",
-      "Androidで画像をノートに共有する際のローカルデータベース同時書き込みを修正しました。",
-      "Safariでノートブックのアイコン選択が不安定になる問題を修正しました。"
+      "APIトークンの対象を指定したノートブックとその子ノートブックに限定し、読み取り専用または読み書き権限を設定できます。既存のトークンの権限は維持されます。",
+      "Markdownファイルやフォルダをインポートできます。フォルダの階層を保ち、ローカル添付ファイルとノート間リンクを解決します。",
+      "構造化テーブルでフィルターと複数列の並べ替えを名前付きビューとして保存できます。大きなテーブルのスクロールを改善し、リンクセルからURLを直接開けるようにしました。",
+      "モバイルブラウザーでJoplinの.jexファイルを選択できない問題と、Evernoteのタスク名や日付がインポート後のノート本文に混入する問題を修正しました。",
+      "EdgeEverのロゴ、アプリアイコン、デモのサンプルノートを更新し、結合したノートの区切り線を調整しました。",
+      "同期とプラグインの重複リクエストを削減し、Cloudflareへの再デプロイ時に有効な認証設定を既定で保持します。"
     ]
   }
 }
